@@ -1,17 +1,9 @@
+from typing import Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from haystack import Pipeline
-from haystack.components.embedders import SentenceTransformersTextEmbedder
-from haystack.components.builders import ChatPromptBuilder
-from haystack.components.generators.chat import OpenAIChatGenerator
-from haystack.dataclasses import ChatMessage
-
-from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever
-
-from app.config import EMBED_MODEL, CHAT_MODEL, TOP_K
-from app.storage.vector_store import get_user_document_store
 from app.services.job_service import list_indexed_files
+from app.services.query_service import get_query_pipeline
 
 router = APIRouter(prefix="/ask", tags=["ask"])
 
@@ -19,57 +11,7 @@ router = APIRouter(prefix="/ask", tags=["ask"])
 class AskRequest(BaseModel):
     user_id: str
     question: str
-
-
-RAG_PROMPT = """
-Answer the user's question using only the retrieved chunks below.
-If the answer is not present, say:
-I could not find that in the indexed files.
-
-Retrieved chunks:
-{% for doc in documents %}
----
-File: {{ doc.meta.get("file_path", "unknown") }}
-Page: {{ doc.meta.get("page_number", "n/a") }}
-Content:
-{{ doc.content }}
-{% endfor %}
-
-Question: {{ question }}
-"""
-
-
-def build_query_pipeline(user_id: str):
-    query = Pipeline()
-
-    text_embedder = SentenceTransformersTextEmbedder(model=EMBED_MODEL)
-    text_embedder.warm_up()
-
-    query.add_component("text_embedder", text_embedder)
-    query.add_component(
-        "retriever",
-        ChromaEmbeddingRetriever(
-            document_store=get_user_document_store(user_id),
-            top_k=TOP_K,
-        ),
-    )
-    query.add_component(
-        "prompt_builder",
-        ChatPromptBuilder(
-            template=[ChatMessage.from_user(RAG_PROMPT)],
-            required_variables=["question", "documents"],
-        ),
-    )
-    query.add_component(
-        "llm",
-        OpenAIChatGenerator(model=CHAT_MODEL),
-    )
-
-    query.connect("text_embedder.embedding", "retriever.query_embedding")
-    query.connect("retriever.documents", "prompt_builder.documents")
-    query.connect("prompt_builder.prompt", "llm.messages")
-
-    return query
+    file_ids: Optional[List[str]] = None
 
 
 @router.post("")
@@ -81,7 +23,11 @@ def ask_question(payload: AskRequest):
             detail="No indexed files are available yet for this user.",
         )
 
-    pipeline = build_query_pipeline(payload.user_id)
+    allowed_ids = None
+    if payload.file_ids:
+        allowed_ids = set(payload.file_ids)
+
+    pipeline = get_query_pipeline(payload.user_id)
 
     result = pipeline.run(
         {
@@ -92,21 +38,34 @@ def ask_question(payload: AskRequest):
     )
 
     docs = result["retriever"]["documents"]
+
+    if allowed_ids is not None:
+        docs = [d for d in docs if d.meta.get("file_id") in allowed_ids]
+
+    if not docs:
+        return {
+            "indexed_files_count": len(indexed_files),
+            "answer": "I could not find that in the selected indexed files.",
+            "sources": [],
+        }
+
     sources = []
     seen = set()
 
     for doc in docs:
         item = {
+            "file_id": doc.meta.get("file_id"),
             "file": doc.meta.get("file_path", "unknown"),
             "page": doc.meta.get("page_number", "n/a"),
             "preview": (doc.content or "")[:250].replace("\n", " "),
         }
-        key = (item["file"], item["page"], item["preview"])
+        key = (item["file_id"], item["file"], item["page"], item["preview"])
         if key not in seen:
             seen.add(key)
             sources.append(item)
 
     return {
+        "indexed_files_count": len(indexed_files),
         "answer": result["llm"]["replies"][0].text,
         "sources": sources,
     }

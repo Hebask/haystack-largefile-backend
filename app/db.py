@@ -48,5 +48,25 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS job_checkpoints (
+        job_id TEXT PRIMARY KEY,
+        file_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        last_completed_page INTEGER NOT NULL DEFAULT 0,
+        total_pages INTEGER NOT NULL DEFAULT 0,
+        chunk_ids_json TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS job_cancellations (
+        job_id TEXT PRIMARY KEY,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     conn.commit()
     conn.close()
