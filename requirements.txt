@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+pydantic
+haystack-ai
+chroma-haystack
+sentence-transformers>=4.1.0
+transformers
+torch
+openai
+pypdf
+python-docx
+openpyxl
+pandas
